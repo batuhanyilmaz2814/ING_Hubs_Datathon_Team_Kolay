@@ -2,32 +2,47 @@
 
 from src import data_processing
 from src import config
+from src import feature_engineering
+from src import model_training
+from src import predict # Yeni modülümüzü import ediyoruz
 
-def initial_data_analysis(data_files):
+def main():
     """
-    Yüklenen verilerin temel analizlerini yapar ve ekrana yazdırır.
+    Ana veri bilimi boru hattını (pipeline) çalıştırır.
     """
-    print("\n--- Müşteri Demografik Bilgileri Detayları ---")
-    print(data_files['customers'].info())
-    print("\nEksik Veri Sayısı:")
-    print(data_files['customers'].isnull().sum())
-    
-    print("\n--- Müşteri İşlem Geçmişi Detayları ---")
-    print(data_files['history'].info())
-    print("\nEksik Veri Sayısı:")
-    print(data_files['history'].isnull().sum())
-
-    print("\n--- Eğitim Referans Verisi (Churn) Dağılımı ---")
-    churn_dist = data_files['ref_train'][config.TARGET_COLUMN].value_counts(normalize=True) * 100
-    print(churn_dist)
-
-if __name__ == '__main__':
-    # Adım 1: Verileri yükle
+    # Adım 1: Verileri yükle ve ön işle
     all_data = data_processing.load_all_data()
-    
-    # Adım 2: Temel ön işleme
     all_data = data_processing.preprocess_initial_data(all_data)
     
-    # Adım 3: İlk veri analizini yap
     if all_data:
-        initial_data_analysis(all_data)
+        # Adım 2: Eğitim verisi için özellik mühendisliği yap
+        train_df_features = feature_engineering.create_features(
+            customers=all_data['customers'],
+            history=all_data['history'],
+            reference_df=all_data['ref_train']
+        )
+
+        # Adım 3: Veriyi modellemeye hazırla
+        X, y = model_training.prepare_data_for_modeling(train_df_features)
+
+        # Adım 4: Veriyi eğitim ve validasyon setlerine ayır (skoru görmek için)
+        X_train, X_val, y_train, y_val = model_training.split_data(X, y)
+
+        # Adım 5: Modeli eğit ve değerlendir
+        model = model_training.train_model(X_train, y_train)
+        model_training.evaluate_model(model, X_val, y_val)
+        
+        # --- NİHAİ ADIMLAR ---
+        print("\n--- Nihai Model Eğitimi ve Tahmin Süreci ---")
+        # Adım 6: Modeli tüm eğitim verisiyle yeniden eğit
+        final_model = model_training.train_model(X, y)
+
+        # Adım 7: Nihai modeli diske kaydet
+        model_training.save_model(final_model, config.MODEL_PATH)
+
+        # Adım 8: Test verisi üzerinde tahminleri yap ve teslim dosyasını oluştur
+        predict.make_predictions(final_model, all_data)
+
+
+if __name__ == '__main__':
+    main()

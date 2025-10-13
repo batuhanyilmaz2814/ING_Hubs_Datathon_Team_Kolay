@@ -16,4 +16,10 @@ SAMPLE_SUBMISSION_PATH = f"{RAW_DATA_DIR}/sample_submission.csv"
 
 # --- Model Ayarları ---
 TARGET_COLUMN = 'target'
+TEST_SIZE = 0.2 # Verinin %20'sini validasyon için ayır
+RANDOM_STATE = 42 # Tekrarlanabilir sonuçlar için sabit bir sayı
 # Diğer model parametreleri buraya eklenecek...
+
+# --- Çıktı Dosya Yolları ---
+MODEL_PATH = f"{MODELS_DIR}/lightgbm_model.txt"
+SUBMISSION_PATH = "submission.csv"
