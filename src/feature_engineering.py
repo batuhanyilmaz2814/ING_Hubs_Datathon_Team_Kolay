@@ -1,6 +1,7 @@
 # src/feature_engineering.py
 
 import pandas as pd
+import matplotlib.pyplot as plt
 
 def create_features(customers, history, reference_df):
     """
@@ -59,6 +60,8 @@ def create_features(customers, history, reference_df):
     categorical_cols = ['gender', 'religion', 'work_type', 'work_sector']
     df = pd.get_dummies(df, columns=categorical_cols, drop_first=True, dtype=float)
 
+
+
     print("Özellik mühendisliği tamamlandı.")
-    print(df)
     return df
+

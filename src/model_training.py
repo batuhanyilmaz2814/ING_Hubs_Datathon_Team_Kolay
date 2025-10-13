@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from src import config
 import joblib
+import optuna
 
 def prepare_data_for_modeling(df):
     """
@@ -37,61 +38,91 @@ def split_data(X, y):
     print(f"Validasyon seti boyutu: {X_val.shape}")
     return X_train, X_val, y_train, y_val
 
-def train_model(X_train, y_train):
+
+def optimize_hyperparameters(X_train, y_train, X_val, y_val):
     """
-    LightGBM modelini eğitir.
+    Optuna kullanarak en iyi LightGBM hiperparametrelerini bulur.
     """
-    print("\nModel eğitimi başlıyor...")
-    model = lgb.LGBMClassifier(random_state=config.RANDOM_STATE)
-    model.fit(X_train, y_train)
-    print("Model eğitimi tamamlandı.")
-    return model
+    print("\nHiperparametre optimizasyonu başlıyor...")
+
+    def objective(trial):
+        # Ayarlanacak parametre aralıklarını tanımla
+        params = {
+            'objective': 'binary',
+            'metric': 'auc',
+            'verbosity': -1,
+            'boosting_type': 'gbdt',
+            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
+            'num_leaves': trial.suggest_int('num_leaves', 20, 300),
+            'max_depth': trial.suggest_int('max_depth', 3, 12),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+        }
+        
+        model = lgb.LGBMClassifier(**params, random_state=config.RANDOM_STATE)
+        model.fit(X_train, y_train,
+                  eval_set=[(X_val, y_val)],
+                  eval_metric='auc',
+                  callbacks=[lgb.early_stopping(100, verbose=False)]) # 100 deneme boyunca skor artmazsa dur
+        
+        preds = model.predict_proba(X_val)[:, 1]
+        auc = roc_auc_score(y_val, preds)
+        return auc
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=50) # 50 farklı parametre kombinasyonu deneyecek
+
+    print("En iyi deneme:")
+    print(f"  Değer (AUC): {study.best_value}")
+    print("  Parametreler: ")
+    for key, value in study.best_params.items():
+        print(f"    {key}: {value}")
+        
+    return study.best_params
+
+def train_final_model(X, y, best_params):
+    """
+    Bulunan en iyi parametrelerle nihai modeli eğitir.
+    """
+    print("\nNihai model en iyi parametrelerle eğitiliyor...")
+    final_model = lgb.LGBMClassifier(**best_params, random_state=config.RANDOM_STATE)
+    final_model.fit(X, y)
+    print("Nihai model eğitimi tamamlandı.")
+    return final_model
+
+# src/model_training.py -> Bu fonksiyonu güncelliyoruz
+
+# Yeni metrik modülümüzü ve içindeki fonksiyonları import edelim
+from src.metrics import ing_hubs_datathon_metric, recall_at_k, lift_at_k, convert_auc_to_gini
 
 def evaluate_model(model, X_val, y_val):
     """
-    Modeli yarışmanın özel metriklerine göre değerlendirir.
+    Modeli YARIŞMANIN RESMİ METRİĞİNE göre değerlendirir.
     """
-    print("\nModel değerlendiriliyor...")
+    print("\nModel resmi metrik fonksiyonu ile değerlendiriliyor...")
     y_pred_proba = model.predict_proba(X_val)[:, 1]
 
-    # Baseline değerleri
-    baseline_gini = 0.38515
-    baseline_recall_at_10 = 0.18469
-    baseline_lift_at_10 = 1.84715
+    # Resmi fonksiyonu kullanarak nihai skoru hesapla
+    final_score = ing_hubs_datathon_metric(y_val, y_pred_proba)
 
-    # 1. Gini Hesaplama
+    # Ekrana detaylı bilgi basmak için bireysel metrikleri de hesaplayalım
     roc_auc = roc_auc_score(y_val, y_pred_proba)
-    gini = 2 * roc_auc - 1
+    gini = convert_auc_to_gini(roc_auc)
+    recall = recall_at_k(y_val, y_pred_proba)
+    lift = lift_at_k(y_val, y_pred_proba)
 
-    # 2. Recall@10% ve Lift@10% Hesaplama
-    df_eval = pd.DataFrame({'true': y_val, 'proba': y_pred_proba})
-    df_eval = df_eval.sort_values('proba', ascending=False)
-    
-    top_10_percent_count = int(len(df_eval) * 0.1)
-    top_10_df = df_eval.head(top_10_percent_count)
-    
-    total_positives = df_eval['true'].sum()
-    top_10_positives = top_10_df['true'].sum()
-    
-    recall_at_10 = top_10_positives / total_positives if total_positives > 0 else 0
-    lift_at_10 = recall_at_10 / 0.1 if recall_at_10 > 0 else 0
-    
-    # 3. Final Yarışma Skoru
-    score = (0.4 * (gini / baseline_gini) +
-             0.3 * (recall_at_10 / baseline_recall_at_10) +
-             0.3 * (lift_at_10 / baseline_lift_at_10))
-    
-    print("\n--- DEĞERLENDİRME SONUÇLARI ---")
+    print("\n--- DEĞERLENDİRME SONUÇLARI (Resmi Metrik) ---")
     print(f"ROC AUC: {roc_auc:.5f}")
-    print(f"Gini: {gini:.5f} (Baseline: {baseline_gini:.5f})")
-    print(f"Recall@10%: {recall_at_10:.5f} (Baseline: {baseline_recall_at_10:.5f})")
-    print(f"Lift@10%: {lift_at_10:.5f} (Baseline: {baseline_lift_at_10:.5f})")
+    print(f"Gini: {gini:.5f}")
+    print(f"Recall@10%: {recall:.5f}")
+    print(f"Lift@10%: {lift:.5f}")
     print("-" * 30)
-    print(f"Final Yarışma Skoru: {score:.5f}")
-    print("---------------------------------")
-
+    print(f"Final Resmi Yarışma Skoru: {final_score:.5f}")
+    print("---------------------------------------------")
     
-    return score
+    # Optuna gibi yerlerde kullanılmak üzere nihai skoru döndür
+    return final_score
 
 def save_model(model, file_path):
     """
