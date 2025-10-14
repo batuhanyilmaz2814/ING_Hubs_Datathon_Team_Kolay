@@ -1,38 +1,27 @@
 # src/model_training.py
 
+import joblib
 import pandas as pd
 import lightgbm as lgb
+import xgboost as xgb
+# Artık xgboost.callback importuna gerek yok
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from src import config
-import joblib
 import optuna
+from src.metrics import ing_hubs_datathon_metric, recall_at_k, lift_at_k, convert_auc_to_gini
 
+# ... (prepare_data_for_modeling ve split_data fonksiyonları aynı kalacak) ...
 def prepare_data_for_modeling(df):
-    """
-    Özellik matrisini modellemeye hazır hale getirir (X ve y olarak ayırır).
-    """
-    # Modelin kullanmayacağı, tanımlayıcı sütunları kaldıralım.
-    # 'province' gibi one-hot encode edilmemiş kategorik sütunlar varsa onlar da kaldırılmalı.
     features_to_drop = [config.TARGET_COLUMN, 'musteri_id', 'ref_dt', 'province']
-    
-    # province sütunu yoksa hata vermemesi için kontrol edelim
     existing_cols_to_drop = [col for col in features_to_drop if col in df.columns]
-
     X = df.drop(columns=existing_cols_to_drop)
     y = df[config.TARGET_COLUMN]
-    
     return X, y
 
 def split_data(X, y):
-    """
-    Veriyi eğitim ve validasyon setlerine ayırır.
-    """
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
-        stratify=y  # Dengesiz veri setleri için target dağılımını korur
+        X, y, test_size=config.TEST_SIZE, random_state=config.RANDOM_STATE, stratify=y
     )
     print(f"Eğitim seti boyutu: {X_train.shape}")
     print(f"Validasyon seti boyutu: {X_val.shape}")
@@ -41,37 +30,53 @@ def split_data(X, y):
 
 def optimize_hyperparameters(X_train, y_train, X_val, y_val):
     """
-    Optuna kullanarak en iyi LightGBM hiperparametrelerini bulur.
+    Optuna kullanarak config'de seçilen model için en iyi hiperparametreleri bulur.
     """
-    print("\nHiperparametre optimizasyonu başlıyor...")
+    print(f"\n{config.MODEL_TYPE.upper()} için hiperparametre optimizasyonu başlıyor...")
 
     def objective(trial):
-        # Ayarlanacak parametre aralıklarını tanımla
-        params = {
-            'objective': 'binary',
-            'metric': 'auc',
-            'verbosity': -1,
-            'boosting_type': 'gbdt',
-            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
-            'num_leaves': trial.suggest_int('num_leaves', 20, 300),
-            'max_depth': trial.suggest_int('max_depth', 3, 12),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
-        }
+        if config.MODEL_TYPE == 'lightgbm':
+            # ... (LightGBM kısmı aynı kalacak) ...
+            params = {
+                'objective': 'binary', 'metric': 'auc', 'verbosity': -1, 'boosting_type': 'gbdt',
+                'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+                'learning_rate': trial.suggest_float('learning_rate', 0.02, 0.1),
+                'num_leaves': trial.suggest_int('num_leaves', 15, 80),
+                'max_depth': trial.suggest_int('max_depth', 4, 8),
+                'reg_alpha': trial.suggest_float('reg_alpha', 0.1, 10.0),
+                'reg_lambda': trial.suggest_float('reg_lambda', 0.1, 10.0),
+            }
+            model = lgb.LGBMClassifier(**params, random_state=config.RANDOM_STATE)
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], eval_metric='auc',
+                      callbacks=[lgb.early_stopping(100, verbose=False)])
         
-        model = lgb.LGBMClassifier(**params, random_state=config.RANDOM_STATE)
-        model.fit(X_train, y_train,
-                  eval_set=[(X_val, y_val)],
-                  eval_metric='auc',
-                  callbacks=[lgb.early_stopping(100, verbose=False)]) # 100 deneme boyunca skor artmazsa dur
-        
+        elif config.MODEL_TYPE == 'xgboost':
+            params = {
+                'objective': 'binary:logistic', 'eval_metric': 'auc', 'verbosity': 0,
+                'n_estimators': trial.suggest_int('n_estimators', 200, 800),
+                'learning_rate': trial.suggest_float('learning_rate', 0.02, 0.1),
+                'max_depth': trial.suggest_int('max_depth', 3, 8),
+                'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+                'gamma': trial.suggest_float('gamma', 0, 5),
+            }
+            
+            # --- KESİN ÇÖZÜM BURADA ---
+            # Early stopping parametresini doğrudan modelin kendisine veriyoruz.
+            model = xgb.XGBClassifier(**params, 
+                                      early_stopping_rounds=100, # <-- DOĞRU YÖNTEM
+                                      random_state=config.RANDOM_STATE)
+            
+            # fit() metodundan ilgili parametreleri kaldırıyoruz.
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+            # --------------------------
+
         preds = model.predict_proba(X_val)[:, 1]
         auc = roc_auc_score(y_val, preds)
         return auc
 
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=50) # 50 farklı parametre kombinasyonu deneyecek
+    study.optimize(objective, n_trials=50)
 
     print("En iyi deneme:")
     print(f"  Değer (AUC): {study.best_value}")
@@ -82,19 +87,18 @@ def optimize_hyperparameters(X_train, y_train, X_val, y_val):
     return study.best_params
 
 def train_final_model(X, y, best_params):
-    """
-    Bulunan en iyi parametrelerle nihai modeli eğitir.
-    """
-    print("\nNihai model en iyi parametrelerle eğitiliyor...")
-    final_model = lgb.LGBMClassifier(**best_params, random_state=config.RANDOM_STATE)
-    final_model.fit(X, y)
+    print(f"\nNihai model ({config.MODEL_TYPE.upper()}) en iyi parametrelerle eğitiliyor...")
+    
+    if config.MODEL_TYPE == 'lightgbm':
+        model = lgb.LGBMClassifier(**best_params, random_state=config.RANDOM_STATE)
+    elif config.MODEL_TYPE == 'xgboost':
+        if 'use_label_encoder' in best_params:
+            del best_params['use_label_encoder']
+        model = xgb.XGBClassifier(**best_params, random_state=config.RANDOM_STATE)
+        
+    model.fit(X, y)
     print("Nihai model eğitimi tamamlandı.")
-    return final_model
-
-# src/model_training.py -> Bu fonksiyonu güncelliyoruz
-
-# Yeni metrik modülümüzü ve içindeki fonksiyonları import edelim
-from src.metrics import ing_hubs_datathon_metric, recall_at_k, lift_at_k, convert_auc_to_gini
+    return model
 
 def evaluate_model(model, X_val, y_val):
     """
@@ -107,6 +111,7 @@ def evaluate_model(model, X_val, y_val):
     final_score = ing_hubs_datathon_metric(y_val, y_pred_proba)
 
     # Ekrana detaylı bilgi basmak için bireysel metrikleri de hesaplayalım
+    # Bu metrikler artık src/metrics.py içerisinden çağrılıyor
     roc_auc = roc_auc_score(y_val, y_pred_proba)
     gini = convert_auc_to_gini(roc_auc)
     recall = recall_at_k(y_val, y_pred_proba)
@@ -121,13 +126,10 @@ def evaluate_model(model, X_val, y_val):
     print(f"Final Resmi Yarışma Skoru: {final_score:.5f}")
     print("---------------------------------------------")
     
-    # Optuna gibi yerlerde kullanılmak üzere nihai skoru döndür
     return final_score
 
 def save_model(model, file_path):
-    """
-    Eğitilmiş modeli diske kaydeder.
-    """
     print(f"Model {file_path} adresine kaydediliyor...")
-    joblib.dump(model, file_path)
-    print("Model başarıyla kaydedildi.")
+    model_path = file_path.replace('.txt', f'_{config.MODEL_TYPE}.txt')
+    joblib.dump(model, model_path)
+    print(f"Model başarıyla {model_path} olarak kaydedildi.")

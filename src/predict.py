@@ -1,7 +1,7 @@
 # src/predict.py
 
 import pandas as pd
-from src import config
+from src import config  # <-- config'i import ediyoruz
 from src import feature_engineering
 
 def make_predictions(model, all_data):
@@ -17,8 +17,17 @@ def make_predictions(model, all_data):
         reference_df=all_data['ref_test']
     )
 
-    # 2. Modelin eğitildiği sütunları belirle
-    train_cols = model.feature_name_
+    # --- DÜZELTME BURADA ---
+    # Model tipine göre doğru özellik adı listesini alıyoruz.
+    if config.MODEL_TYPE == 'lightgbm':
+        train_cols = model.feature_name_
+    elif config.MODEL_TYPE == 'xgboost':
+        train_cols = model.feature_names_in_
+    else:
+        raise ValueError(f"Bilinmeyen model tipi: {config.MODEL_TYPE}")
+    # ---------------------
+
+    # Test setinin sütunlarını, eğitim setinin sütunlarıyla tam olarak aynı hale getir.
     X_test = test_df_features.reindex(columns=train_cols, fill_value=0)
     
     # 3. Tahminleri yap
@@ -27,12 +36,8 @@ def make_predictions(model, all_data):
     # 4. Teslim dosyasını oluştur
     submission_df = pd.DataFrame({
         'cust_id': all_data['ref_test']['musteri_id'],
-        'churn': predictions # Kaggle'ın beklediği sütun adı 'churn'
+        'churn': predictions
     })
-
-    # --- DÜZELTME ---
-    # Kaggle 'target' değil, 'churn' sütununu istediği için bu satırı siliyoruz.
-    # submission_df.rename(columns={'churn': 'target'}, inplace=True)
     
     # 5. Dosyayı kaydet
     submission_df.to_csv(config.SUBMISSION_PATH, index=False)
