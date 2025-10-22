@@ -1,10 +1,10 @@
 # src/config.py
 
 # --- Dosya Yolları ---
-DATA_DIR = "data"
+DATA_DIR = "../ING_Model/data"
 RAW_DATA_DIR = f"{DATA_DIR}/raw"
 PROCESSED_DATA_DIR = f"{DATA_DIR}/processed"
-MODELS_DIR = "models"
+MODELS_DIR = "."
 REPORTS_DIR = "reports"
 
 # Ham veri dosyalarının tam yolları
@@ -15,12 +15,11 @@ REFERENCE_DATA_TEST_PATH = f"{RAW_DATA_DIR}/referance_data_test.csv"
 SAMPLE_SUBMISSION_PATH = f"{RAW_DATA_DIR}/sample_submission.csv"
 
 # --- Model Ayarları ---
-MODEL_TYPE = 'xgboost'
 TARGET_COLUMN = 'target'
 TEST_SIZE = 0.2 # Verinin %20'sini validasyon için ayır
 RANDOM_STATE = 42 # Tekrarlanabilir sonuçlar için sabit bir sayı
 # Diğer model parametreleri buraya eklenecek...
 
 # --- Çıktı Dosya Yolları ---
-MODEL_PATH = f"{MODELS_DIR}/lightgbm_model.txt"
+MODEL_PATH = "final_model_lightgbm.txt" # LightGBM için geri alındı
 SUBMISSION_PATH = "submission.csv"

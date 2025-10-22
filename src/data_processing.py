@@ -4,6 +4,13 @@ import pandas as pd
 from src import config
 
 def load_all_data():
+    print("Dosya yolları:")
+    print(config.CUSTOMER_HISTORY_PATH)
+    print(config.CUSTOMERS_PATH)
+    print(config.REFERENCE_DATA_PATH)
+    print(config.REFERENCE_DATA_TEST_PATH)
+    print(config.SAMPLE_SUBMISSION_PATH)
+
     """
     Tüm ham veri dosyalarını yükler ve bir sözlük (dictionary) olarak döndürür.
     """
