@@ -1,163 +1,79 @@
 # src/model_training.py
 
+import joblib
 import pandas as pd
 import lightgbm as lgb
-from sklearn.model_selection import train_test_split
+import xgboost as xgb
 from sklearn.metrics import roc_auc_score
 from src import config
-import joblib
 import optuna
-from optuna.integration import LightGBMPruningCallback
-import numpy as np  # Gerekli
-
-# Yeni metrik modülümüzü ve içindeki fonksiyonları import edelim
-from src.metrics import ing_hubs_datathon_metric, recall_at_k, lift_at_k, convert_auc_to_gini
-
+from src.metrics import ing_hubs_datathon_metric
 
 def prepare_data_for_modeling(df):
-    """
-    Özellik matrisini modellemeye hazır hale getirir (X ve y olarak ayırır).
-    """
     features_to_drop = [config.TARGET_COLUMN, 'musteri_id', 'ref_dt', 'province']
     existing_cols_to_drop = [col for col in features_to_drop if col in df.columns]
-
     X = df.drop(columns=existing_cols_to_drop)
     y = df[config.TARGET_COLUMN]
+    return X, y
 
-    categorical_features = X.select_dtypes(include='category').columns.tolist()
-
-    return X, y, categorical_features
-
-
-def split_data(X, y, categorical_features):
-    """
-    Veriyi eğitim ve validasyon setlerine ayırır.
-    """
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
-        stratify=y
-    )
+def split_data_by_time(df_features):
+    print("Veri, zaman odaklı olarak ayrılıyor...")
+    split_date = df_features['ref_dt'].max() - pd.DateOffset(months=3)
+    train_df = df_features[df_features['ref_dt'] < split_date].copy()
+    val_df = df_features[df_features['ref_dt'] >= split_date].copy()
+    X_train, y_train = prepare_data_for_modeling(train_df)
+    X_val, y_val = prepare_data_for_modeling(val_df)
     print(f"Eğitim seti boyutu: {X_train.shape}")
     print(f"Validasyon seti boyutu: {X_val.shape}")
+    return X_train, X_val, y_train, y_val
 
-    return X_train, X_val, y_train, y_val, categorical_features
-
-
-# --- OPTUNA FONKSİYONU ---
-def objective(trial, X_train, y_train, X_val, y_val, categorical_features):
-    """
-    Optuna'nın optimize edeceği amaç fonksiyonu.
-    Hedef: Validasyon AUC'yi maksimize etmek.
-    """
-    params = {
-        'objective': 'binary',
-        'metric': 'auc',
-        'boosting_type': 'gbdt',
-        'n_estimators': 3000,
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.05),
-        'num_leaves': trial.suggest_int('num_leaves', 16, 32),
-        'max_depth': trial.suggest_int('max_depth', 5, 8),
-        'min_child_samples': trial.suggest_int('min_child_samples', 20, 100),
-        'subsample': trial.suggest_float('subsample', 0.7, 0.95),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.7, 0.95),
-        'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
-        'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
-        'n_jobs': -1,
-        'random_state': config.RANDOM_STATE,
-        'verbose': -1
-    }
-
-    pruning_callback = LightGBMPruningCallback(trial, 'auc', valid_name='valid_0')
-
-    model = lgb.LGBMClassifier(**params)
-
-    model.fit(X_train, y_train,
-              eval_set=[(X_val, y_val)],
-              eval_metric='auc',
-              callbacks=[lgb.early_stopping(100, verbose=False), pruning_callback],
-              categorical_feature=categorical_features if categorical_features else 'auto')
-
-    return model.best_score_['valid_0']['auc']
-
-
-def optimize_hyperparameters(X, y, categorical_features):
-    """
-    Optuna optimizasyonunu çalıştırır ve en iyi parametreleri döndürür.
-    """
-    print("\n--- PARAMETRE OPTİMİZASYONU BAŞLIYOR (OPTUNA İLE) ---")
-
-    # Optimizasyon için X'i ayır
-    X_train, X_val, y_train, y_val, _ = split_data(X, y, categorical_features)
-
-    # Optuna Study oluştur
+def optimize_hyperparameters(X_train, y_train, X_val, y_val):
+    print(f"\n{config.MODEL_TYPE.upper()} için HIZLI ve GÜVENLİ hiperparametre optimizasyonu başlıyor...")
+    def objective(trial):
+        # Aşırı öğrenmeyi önlemek için daha basit ve kısıtlı bir arama uzayı
+        params = {
+            'objective': 'binary', 'metric': 'auc', 'verbosity': -1,
+            'n_estimators': 1000, # Sabit ve yüksek tutuyoruz, early stopping halledecek
+            'learning_rate': trial.suggest_float('learning_rate', 0.02, 0.1),
+            'num_leaves': trial.suggest_int('num_leaves', 10, 40),
+            'max_depth': trial.suggest_int('max_depth', 3, 7),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.1, 10.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.1, 10.0),
+        }
+        model = lgb.LGBMClassifier(**params, random_state=config.RANDOM_STATE)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
+        
+        preds = model.predict_proba(X_val)[:, 1]
+        score = ing_hubs_datathon_metric(y_val, preds)
+        return score
+        
     study = optuna.create_study(direction='maximize')
+    # Daha hızlı sonuç için deneme sayısını 15'e düşürelim
+    study.optimize(objective, n_trials=15) 
+    print(f"En iyi deneme skoru: {study.best_value}")
+    print(f"En iyi parametreler: {study.best_params}")
+    return study.best_params
 
-    # Optimizasyonu çalıştır (Örnek olarak 30 deneme)
-    N_TRIALS = 30
-    study.optimize(lambda trial: objective(trial, X_train, y_train, X_val, y_val, categorical_features),
-                   n_trials=N_TRIALS)
-
-    print(f"Optimizasyon Tamamlandı. En iyi AUC: {study.best_value:.5f}")
-
-    # En iyi parametreleri al ve temel parametreleri ekle
-    best_params = study.best_params
-    best_params['objective'] = 'binary'
-    best_params['metric'] = 'auc'
-    best_params['boosting_type'] = 'gbdt'
-    best_params['n_estimators'] = 5000
-
-    return best_params
-
-
-def train_lgbm_with_early_stopping(X_train, y_train, X_val, y_val, params, categorical_features):
-    """
-    Erken Durdurma mekanizması ile LightGBM modelini eğitir ve en iyi iterasyon sayısını döndürür.
-    """
-    print("-> LightGBM Modeli Erken Durdurma ile Eğitiliyor...")
-
-    model_params = params.copy()
-
-    model = lgb.LGBMClassifier(**model_params, random_state=config.RANDOM_STATE)
-
-    callbacks = [lgb.early_stopping(stopping_rounds=100, verbose=False)]
-
-    model.fit(X_train, y_train,
-              eval_set=[(X_val, y_val)],
-              eval_metric='auc',
-              callbacks=callbacks,
-              categorical_feature=categorical_features if categorical_features else 'auto')
-
-    best_n_estimators = model.best_iteration_
-
-    print(f"-> LightGBM Eğitimi Tamamlandı. En iyi iterasyon sayısı: {best_n_estimators}")
-    return model, best_n_estimators
-
-
-def train_final_model_full_data(X, y, best_params, categorical_features=None, n_estimators=None):
-    """
-    Bulunan en iyi parametrelerle (ve en iyi tur sayısıyla) nihai modeli TÜM VERİ üzerinde eğitir.
-    """
-    print("\nNihai model TÜM VERİ üzerinde eğitiliyor (LightGBM)...")
-
-    model_params = best_params.copy()
-    if n_estimators is not None:
-        model_params['n_estimators'] = n_estimators
-
-    final_model = lgb.LGBMClassifier(**model_params, random_state=config.RANDOM_STATE)
-
-    final_model.fit(X, y,
-                    categorical_feature=categorical_features if categorical_features else 'auto')
-
+# Diğer fonksiyonlar (train_final_model, evaluate_model, save_model) aynı kalabilir.
+# Sadece config'den MODEL_TYPE='lightgbm' seçtiğinizden emin olun.
+# ... (geri kalan fonksiyonları silmeyin, aynı kalacaklar) ...
+def train_final_model(X, y, best_params):
+    print(f"\nNihai model ({config.MODEL_TYPE.upper()}) en iyi parametrelerle eğitiliyor...")
+    model = lgb.LGBMClassifier(**best_params, n_estimators=1000, random_state=config.RANDOM_STATE)
+    model.fit(X, y)
     print("Nihai model eğitimi tamamlandı.")
-    return final_model
+    return model
 
+def evaluate_model(model, X_val, y_val):
+    print("\nModel resmi metrik fonksiyonu ile değerlendiriliyor...")
+    y_pred_proba = model.predict_proba(X_val)[:, 1]
+    final_score = ing_hubs_datathon_metric(y_val, y_pred_proba)
+    print(f"\n--- DEĞERLENDİRME SONUÇLARI (Resmi Metrik) ---")
+    print(f"Final Resmi Yarışma Skoru: {final_score:.5f}")
+    print("---------------------------------------------")
+    return final_score
 
 def save_model(model, file_path):
-    """
-    Eğitilmiş modeli diske kaydeder.
-    """
-    print(f"Model {file_path} adresine kaydediliyor...")
-    joblib.dump(model, file_path)
-    print("Model başarıyla kaydedildi.")
+    model_path = file_path.replace('.txt', f'_{config.MODEL_TYPE}.txt')
+    joblib.dump(model, model_path)
+    print(f"Model başarıyla {model_path} olarak kaydedildi.")

@@ -4,16 +4,6 @@ import pandas as pd
 from src import config
 
 def load_all_data():
-    print("Dosya yolları:")
-    print(config.CUSTOMER_HISTORY_PATH)
-    print(config.CUSTOMERS_PATH)
-    print(config.REFERENCE_DATA_PATH)
-    print(config.REFERENCE_DATA_TEST_PATH)
-    print(config.SAMPLE_SUBMISSION_PATH)
-
-    """
-    Tüm ham veri dosyalarını yükler ve bir sözlük (dictionary) olarak döndürür.
-    """
     try:
         data_files = {
             'history': pd.read_csv(config.CUSTOMER_HISTORY_PATH),
@@ -29,27 +19,15 @@ def load_all_data():
         return None
 
 def preprocess_initial_data(data_files):
-    """
-    Sütun adlarını standartlaştırır ve temel ön işleme adımlarını uygular.
-    """
     if data_files:
-        # --- Sütun Adlarını Standartlaştırma ---
-        # Her DataFrame için 'cust_id' -> 'musteri_id' dönüşümü
         for df_name in ['history', 'customers', 'ref_train', 'ref_test']:
             data_files[df_name].rename(columns={'cust_id': 'musteri_id'}, inplace=True)
-
-        # Tarih ve hedef sütun adlarını standartlaştırma
         data_files['history'].rename(columns={'date': 'ref_dt'}, inplace=True)
         data_files['ref_train'].rename(columns={'ref_date': 'ref_dt', 'churn': config.TARGET_COLUMN}, inplace=True)
         data_files['ref_test'].rename(columns={'ref_date': 'ref_dt'}, inplace=True)
-        
-        print("Tüm DataFrame'lerde sütun adları standartlaştırıldı.")
+        print("Sütun adları standartlaştırıldı.")
 
-        # --- Veri Tipi Dönüşümü ---
-        # Artık standart 'ref_dt' ismini güvenle kullanabiliriz.
-        data_files['history']['ref_dt'] = pd.to_datetime(data_files['history']['ref_dt'])
-        data_files['ref_train']['ref_dt'] = pd.to_datetime(data_files['ref_train']['ref_dt'])
-        data_files['ref_test']['ref_dt'] = pd.to_datetime(data_files['ref_test']['ref_dt'])
+        for df_name in ['history', 'ref_train', 'ref_test']:
+            data_files[df_name]['ref_dt'] = pd.to_datetime(data_files[df_name]['ref_dt'])
         print("Tarih sütunları datetime formatına dönüştürüldü.")
-        
     return data_files
